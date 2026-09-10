@@ -16,7 +16,7 @@ func TestLongSMSReassemblySurvivesServiceRestart(t *testing.T) {
 		imei     = "867394042309830"
 		peer     = "+447700900123"
 	)
-	messageID := StableConcatMessageID("ims", imei, deviceID, peer, 27, 2)
+	messageID := StableConcatMessageID("ims", imei, deviceID, peer, 27, 2, "1700000000")
 
 	database, err := Open(ctx, path)
 	if err != nil {

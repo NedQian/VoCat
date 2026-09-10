@@ -20,7 +20,7 @@ services:
   vocat:
     # Use the prebuilt multi-arch image from GHCR. Override with
     # --build to compile from the local Dockerfile instead.
-    image: ghcr.io/mengmengcode/vocat:latest
+    image: vocat-custom:latest
     pull_policy: missing
     build:
       context: .
@@ -37,6 +37,8 @@ services:
     # 0.0.0.0:7575 itself); proxy ports opened by the plugin are likewise
     # reachable on the host IP without explicit mapping.
     network_mode: host
+    # ports:
+    #   - "7575:7575"
 
     # Modem/QMI/USB-reader hot-plug uses dynamic character devices. Privileged
     # mode mirrors the documented hardware-access docker run command and also
@@ -48,19 +50,21 @@ services:
       # Marks the process as containerized: the web UI then advertises
       # "pull new image" instead of attempting an in-place binary update.
       VOCAT_CONTAINER: docker
-      # VOCAT_ADDR / VOCAT_DATABASE_PATH are set in the Dockerfile. Admin
-      # credentials are stored only in SQLite and are not process environment.
+      # 強制指定資料庫路徑指向掛載的 Volume 內部路徑
+      VOCAT_DATABASE_PATH: /opt/vocat/data/vocat.db
+      # 強制監聽所有介面，確保 port mapping 能正確轉發
+      VOCAT_ADDR: 0.0.0.0:7575
 
     volumes:
       # SQLite database + persistent state.
       # Note for NAS (e.g. QNAP Container Station / Synology): replace named volume
       # with a host absolute path (e.g. /share/Container/vocat/data:/opt/vocat/data)
       # to avoid volume isolation issues between bootstrap-admin and runtime.
-      - vocat-data:/opt/vocat/data
+      - ./data:/opt/vocat/data
       # Required for modem, MHI/WWAN and PC/SC USB-reader discovery, including
       # devices added after the container starts.
-      - /dev:/dev
-      - /sys:/sys:ro
+    #   - /dev:/dev
+    #   - /sys:/sys:ro
 
 volumes:
   vocat-data:

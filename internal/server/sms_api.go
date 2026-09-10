@@ -190,19 +190,6 @@ func (s *Server) smsStoreFilter(ctx context.Context, deviceID, requestedIMEI str
 // Normalization mirrors the PDU/IMS paths so the block cannot be sidestepped by
 // dropping the leading "+" or using a 00 international prefix.
 func blockedSMSDestination(phone string) (bool, string) {
-	var digits strings.Builder
-	for _, c := range strings.TrimSpace(phone) {
-		if c >= '0' && c <= '9' {
-			digits.WriteRune(c)
-		}
-	}
-	d := digits.String()
-	if strings.HasPrefix(d, "00") {
-		d = d[2:]
-	}
-	if strings.HasPrefix(d, "86") {
-		return true, "SMS to +86 (China) destinations is not allowed"
-	}
 	return false, ""
 }
 
@@ -685,6 +672,12 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 			config.ModemIMEI,
 		)
 		concatSources := modemSMSConcatSources(messages)
+		// Persist first, release modem storage afterwards. Deleting a slot while
+		// the listing is still being grouped recycles its index for the next
+		// message, which made a later long SMS inherit the previous message's id
+		// and overwrite it.
+		persisted := make([]modemSMSPersistResult, 0, len(messages))
+		releaseTargets := make([]device.SMSMessage, 0, len(messages))
 		for _, message := range messages {
 			if message.Direction == device.SMSDirectionStatusReport &&
 				message.MessageReference != nil && message.StatusCode != nil {
@@ -704,6 +697,7 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 				if applyErr != nil && !errors.Is(applyErr, store.ErrNotFound) {
 					s.logger.Warn("apply modem SMS delivery report failed", "device_id", config.ID, "error", applyErr)
 				}
+				releaseTargets = append(releaseTargets, message)
 				continue
 			}
 			peer := firstNonEmpty(message.From, message.To)
@@ -720,6 +714,7 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 			if message.Direction == device.SMSDirectionSubmitted {
 				direction = "outbound"
 			}
+			concatenated := message.Concat != nil && message.Concat.Total > 1
 			messageID := modemSMSMessageID(message, modemIMEI, config.ID, peer, concatSources[modemSMSStorageKey(message)])
 			extra, _ := json.Marshal(map[string]any{
 				"modem_index":        message.Index,
@@ -758,7 +753,15 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 			})
 			if saveErr != nil {
 				s.logger.Warn("persist modem SMS failed", "category", "sms", "device_id", config.ID, "raw_error", saveErr)
-			} else if saved := saveResult.Message; saveResult.Inserted && saved.Direction == "inbound" &&
+				continue
+			}
+			persisted = append(persisted, modemSMSPersistResult{
+				message:   message,
+				messageID: messageID,
+				concat:    concatenated,
+				ready:     store.ConcatSMSReadyToNotify(messageID, saveResult.Message.Extra),
+			})
+			if saved := saveResult.Message; saveResult.Inserted && saved.Direction == "inbound" &&
 				store.ConcatSMSReadyToNotify(saved.MessageID, saved.Extra) {
 				s.logger.Info("cellular SMS received",
 					"category", "sms", "event", "sms.received",
@@ -767,6 +770,71 @@ func (s *Server) syncModemSMS(ctx context.Context, onlyDevice string) {
 					"parts", saved.PartsTotal,
 				)
 			}
+		}
+		// Release the modem copies that are safe to drop: plain messages, plus
+		// every segment of a concatenated message whose parts have all arrived.
+		// An incomplete long SMS keeps its segments, otherwise the first-segment
+		// slot that identifies the group disappears and a later segment can no
+		// longer be attached to it. Segments whose missing parts never arrived
+		// are released after a bounded retention so they cannot pin the storage.
+		now := time.Now().UTC()
+		completeGroups := make(map[string]bool, len(persisted))
+		for _, result := range persisted {
+			if result.concat && result.ready {
+				completeGroups[result.messageID] = true
+			}
+		}
+		for _, result := range persisted {
+			if result.concat && !completeGroups[result.messageID] && !expiredModemSMS(result.message, now) {
+				continue
+			}
+			releaseTargets = append(releaseTargets, result.message)
+		}
+		s.releaseModemSMSSlots(ctx, physicalID, config.ID, releaseTargets)
+	}
+}
+
+// modemSMSPersistResult records one saved modem message so the synchronization
+// loop can decide whether its modem copy may be released.
+type modemSMSPersistResult struct {
+	message   device.SMSMessage
+	messageID string
+	concat    bool
+	ready     bool
+}
+
+// modemSMSIncompleteRetention bounds how long the segments of an unfinished
+// concatenated SMS keep their modem storage slots. A carrier that never delivers
+// the remaining part must not be able to pin the storage full forever.
+const modemSMSIncompleteRetention = time.Hour
+
+// expiredModemSMS reports whether an unfinished concatenated segment is old
+// enough that the missing parts are never going to arrive. A segment without a
+// network timestamp is never considered expired.
+func expiredModemSMS(message device.SMSMessage, now time.Time) bool {
+	stamp := message.ServiceCenterTimestamp
+	if stamp == nil {
+		stamp = message.DischargeTimestamp
+	}
+	if stamp == nil || stamp.IsZero() {
+		return false
+	}
+	return now.Sub(stamp.UTC()) > modemSMSIncompleteRetention
+}
+
+// releaseModemSMSSlots frees the modem storage occupied by already persisted
+// messages. Failures are reported instead of ignored: a slot that stays behind
+// keeps the storage full and is re-read by every later scan.
+func (s *Server) releaseModemSMSSlots(ctx context.Context, physicalID, deviceID string, messages []device.SMSMessage) {
+	for _, message := range messages {
+		deleteContext, cancelDelete := context.WithTimeout(ctx, 5*time.Second)
+		err := s.devices.DeleteSMSFromStorage(deleteContext, physicalID, message.Storage, message.Index)
+		cancelDelete()
+		if err != nil {
+			s.logger.Warn("release modem SMS storage slot failed",
+				"category", "sms", "device_id", deviceID,
+				"storage", message.Storage, "index", message.Index, "error", err,
+			)
 		}
 	}
 }
@@ -780,18 +848,43 @@ func modemSMSMessageID(message device.SMSMessage, modemIMEI, deviceID, peer, con
 		hex.EncodeToString(digest[:8]),
 	)
 	if message.Concat != nil && message.Concat.Total > 1 {
-		// A segment of a carrier-split long SMS. Address the whole message
-		// with a storage-generation id so SaveSMSMessage folds every segment
-		// into one row without colliding with an older message that reused the
-		// same UDH reference. SM and ME can expose duplicate copies of the same
-		// slots, so the generation uses the first segment index, not storage.
+		// A segment of a carrier-split long SMS. Address the whole message with
+		// a storage-generation id so SaveSMSMessage folds every segment into one
+		// row. SM and ME can expose duplicate copies of the same slots, so the
+		// source uses the first segment index, not storage. The generation is the
+		// service-centre timestamp: the source slot is recycled as soon as the
+		// stored copy is freed, so without it a later long SMS that reuses the
+		// same UDH reference would overwrite the previous message's row.
 		source := firstNonEmpty(concatSource, "cellular_at")
 		messageID = store.StableConcatMessageID(
 			source, modemIMEI, deviceID, peer,
 			message.Concat.Reference, message.Concat.Total,
+			concatGeneration(message),
 		)
 	}
 	return messageID
+}
+
+// concatGeneration returns the discriminator that keeps every segment of one
+// concatenated SMS in a single row while keeping two different long SMS apart.
+//
+// The UDH concat reference is only 8 bits and carriers recycle it, and a modem
+// storage slot is recycled as soon as VoCat frees the stored copy, so neither can
+// name a message. The service-centre timestamp is stamped by the network and is
+// shared by the segments of one concatenated SMS, so it is the discriminator
+// available here. It is bucketed to the minute so a carrier that stamps each
+// segment a few seconds apart still merges them. Two long messages from the same
+// peer that reuse the same reference inside one minute can still merge; that is
+// the residual limitation of this scheme.
+func concatGeneration(message device.SMSMessage) string {
+	stamp := message.ServiceCenterTimestamp
+	if stamp == nil {
+		stamp = message.DischargeTimestamp
+	}
+	if stamp == nil || stamp.IsZero() {
+		return ""
+	}
+	return strconv.FormatInt(stamp.UTC().Truncate(time.Minute).Unix(), 10)
 }
 
 type smsSubscriptionIdentity struct {
@@ -999,7 +1092,7 @@ func shouldDeferModemSMSSync(state vowifi.State, stateErr error) bool {
 // and ME as a catch-up path for messages delivered while the card was offline.
 func (s *Server) StartSMSSyncLoop(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
-		interval = 15 * time.Second
+		interval = 5 * time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

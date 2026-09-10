@@ -169,22 +169,27 @@ func TestMergeConcatSegmentWithoutHeaderPassesThrough(t *testing.T) {
 }
 
 func TestStableConcatMessageIDScopesByPeerReferenceTotal(t *testing.T) {
-	a := StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 2)
+	a := StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 2, "1700000000")
 	if !isConcatSMSMessageID(a) {
 		t.Fatalf("id %q missing concat prefix", a)
 	}
-	if again := StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 2); again != a {
+	if again := StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 2, "1700000000"); again != a {
 		t.Fatalf("id unstable: %q vs %q", a, again)
 	}
 	for _, different := range []string{
-		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 8, 2), // other reference
-		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10010", 7, 2), // other peer
-		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 3), // other total
-		StableConcatMessageID("ims", "imei-1", "ec20", "+10086", 7, 2),         // other source
+		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 8, 2, "1700000000"), // other reference
+		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10010", 7, 2, "1700000000"), // other peer
+		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 3, "1700000000"), // other total
+		StableConcatMessageID("ims", "imei-1", "ec20", "+10086", 7, 2, "1700000000"),         // other source
+		StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 2, "1700000060"), // other generation
 	} {
 		if different == a {
 			t.Fatalf("id %q collides across distinct concat groups", a)
 		}
+	}
+	// A generation-less caller keeps the legacy id shape.
+	if legacy := StableConcatMessageID("cellular_at", "imei-1", "ec20", "+10086", 7, 2, ""); legacy == a {
+		t.Fatalf("generation-less id %q must differ from a generated one", legacy)
 	}
 }
 
@@ -192,7 +197,7 @@ func TestConcatSMSReadyToNotify(t *testing.T) {
 	if !ConcatSMSReadyToNotify("modem:SM:3:abcd", json.RawMessage(`{}`)) {
 		t.Fatal("plain message should always be ready")
 	}
-	incomplete := StableConcatMessageID("cellular_at", "imei", "ec20", "peer", 1, 2)
+	incomplete := StableConcatMessageID("cellular_at", "imei", "ec20", "peer", 1, 2, "1700000000")
 	if ConcatSMSReadyToNotify(incomplete, json.RawMessage(`{"concat_complete":false}`)) {
 		t.Fatal("incomplete long SMS must not notify")
 	}
@@ -249,7 +254,7 @@ func TestSaveConcatSMSFoldsSegmentsIntoOneRow(t *testing.T) {
 	save := func(sequence int, text string, at time.Time) SMSMessage {
 		t.Helper()
 		saved, err := database.SaveSMSMessage(ctx, SMSMessage{
-			MessageID: StableConcatMessageID("cellular_at", imei, "ec20-1", "+8520000", 5, 2),
+			MessageID: StableConcatMessageID("cellular_at", imei, "ec20-1", "+8520000", 5, 2, "1700000000"),
 			DeviceID:  "ec20-1", ModemIMEI: imei, IMSI: "45400",
 			Peer: "+8520000", Direction: "inbound", Body: text,
 			Timestamp: at, Status: "received", Source: "cellular_at",
