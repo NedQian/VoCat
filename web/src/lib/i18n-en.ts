@@ -1157,6 +1157,7 @@ export const EN_DICT: Record<string, string> = {
   "查询模式 (AT+QCFG=\"usbnet\"?)": "Query Mode (AT+QCFG=\"usbnet\"?)",
   "设为 QMI (AT+QCFG=\"usbnet\",0)": "Set QMI (AT+QCFG=\"usbnet\",0)",
   "设为 ECM (AT+QCFG=\"usbnet\",1)": "Set ECM (AT+QCFG=\"usbnet\",1)",
+  "检查短信收件箱 (AT+CPMS?)": "Check SMS Inbox (AT+CPMS?)",
   "列出短信 (AT+CMGL=4)": "List SMS (AT+CMGL=4)",
   "读取短信示例 (AT+CMGR=1)": "Read SMS Example (AT+CMGR=1)",
   "删除所有短信 (AT+CMGD=1,4)": "Delete All SMS (AT+CMGD=1,4)",
