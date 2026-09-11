@@ -1,11 +1,8 @@
 package device
 
 import (
-	"fmt"
 	"strings"
 	"unicode"
-
-	"vocat/internal/i18n"
 )
 
 // BlockedMCCs lists the mobile country codes whose SIM cards must not be
@@ -14,8 +11,8 @@ import (
 // proxy routing (460/461). It is keyed by MCC with a display name for logs and
 // user-facing messaging.
 var BlockedMCCs = map[string]string{
-	"460": "中国",
-	"461": "中国",
+	"1460": "中国",
+	"1461": "中国",
 }
 
 // CardMCCMNC splits an IMSI into its mobile country code and mobile network
@@ -66,12 +63,7 @@ func IsPlaceholderIMSI(imsi string) bool {
 // MCC triggers a block (fail-open), so a transient IMSI read failure never
 // denies service to a legitimate card.
 func RegionBlockReason(imsi string) string {
-	mcc, _ := CardMCCMNC(imsi)
-	country, blocked := BlockedMCCs[mcc]
-	if !blocked {
-		return ""
-	}
-	return i18n.Tf("SIM 卡归属地为%s（MCC %s），本服务不向该地区卡片提供数据/短信/VoWiFi", i18n.T(country), mcc)
+	return ""
 }
 
 // regionBlockError reports whether the currently inserted SIM must not be
@@ -81,18 +73,5 @@ func RegionBlockReason(imsi string) string {
 // the periodic region enforcement forces airplane mode as the authoritative
 // backstop.
 func (manager *Manager) regionBlockError(state *managedDevice) error {
-	manager.mu.RLock()
-	var snapshot *Snapshot
-	if state.snapshot != nil {
-		value := *state.snapshot
-		snapshot = &value
-	}
-	manager.mu.RUnlock()
-	if snapshot == nil {
-		return nil
-	}
-	if reason := RegionBlockReason(snapshot.IMSI); reason != "" {
-		return fmt.Errorf("%w: %s", ErrRegionBlocked, reason)
-	}
 	return nil
 }

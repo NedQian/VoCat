@@ -55,6 +55,7 @@ export const AT_COMMAND_GROUPS: AtCommandGroup[] = [
   {
     label: "短信 / USSD",
     items: [
+      { label: "检查短信收件箱 (AT+CPMS?)", value: "AT+CPMS?" },
       { label: "列出短信 (AT+CMGL=4)", value: "AT+CMGL=4" },
       { label: "读取短信示例 (AT+CMGR=1)", value: "AT+CMGR=1" },
       { label: "删除所有短信 (AT+CMGD=1,4)", value: "AT+CMGD=1,4" },

@@ -226,7 +226,8 @@ func (manager *Manager) ReadSMS(
 	id string,
 	index int,
 ) (SMSMessage, error) {
-	if index <= 0 {
+	// Slot zero is a valid storage index on several Quectel firmwares.
+	if index < 0 {
 		return SMSMessage{}, ErrSMSInvalidMessageIndex
 	}
 	state, err := manager.lookup(id)
@@ -278,7 +279,9 @@ func (manager *Manager) DeleteSMSFromStorage(
 	storage string,
 	index int,
 ) error {
-	if index <= 0 {
+	// Slot zero is a valid storage index on several Quectel firmwares; only a
+	// negative value is meaningless.
+	if index < 0 {
 		return ErrSMSInvalidMessageIndex
 	}
 	storage = strings.ToUpper(strings.TrimSpace(storage))

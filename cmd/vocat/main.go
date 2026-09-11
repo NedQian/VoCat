@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1127,7 +1128,26 @@ func receivedIMSSMSMessageID(message ims.ReceivedSMS) string {
 	return store.StableConcatMessageID(
 		"ims", "", deviceSubscription, message.From,
 		message.Concat.Reference, message.Concat.Total,
+		imsConcatGeneration(message),
 	)
+}
+
+// imsConcatGeneration is the discriminator shared by every segment of one
+// concatenated IMS SMS. The carrier reuses the RP reference across deliveries and
+// the UDH concat reference is only 8 bits, so the timestamp is what keeps two
+// different long messages from folding into one row. It is bucketed to the
+// minute so a carrier that stamps each segment a few seconds apart still merges
+// them.
+func imsConcatGeneration(message ims.ReceivedSMS) string {
+	stamp := message.ServiceCenterTimestamp
+	if stamp == nil || stamp.IsZero() {
+		if message.Timestamp.IsZero() {
+			return ""
+		}
+		value := message.Timestamp
+		stamp = &value
+	}
+	return strconv.FormatInt(stamp.UTC().Truncate(time.Minute).Unix(), 10)
 }
 
 func newVoWiFiOrchestrator(

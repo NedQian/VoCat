@@ -53,9 +53,20 @@ func concatSMSKeepsDurableID(extra json.RawMessage) bool {
 // rare reference reuse between two different long messages from the same peer.
 // The hardware identity matches the row lookup in saveSMSMessage, so a segment
 // always finds the row its siblings started.
-func StableConcatMessageID(source, modemIMEI, deviceID, peer string, reference, total int) string {
-	return ConcatMessageIDPrefix + source + ":" + smsHardwareKey(modemIMEI, deviceID) + ":" + peer + ":" +
+//
+// generation must be identical for every segment of one concatenated SMS and
+// different for two long messages that reuse the same reference. The source slot
+// cannot serve that purpose: it is recycled as soon as the modem copy is freed,
+// so without a generation the two messages would share an id and the newer row
+// would overwrite the older one. An empty generation keeps the legacy id shape
+// for callers that have no discriminator.
+func StableConcatMessageID(source, modemIMEI, deviceID, peer string, reference, total int, generation string) string {
+	messageID := ConcatMessageIDPrefix + source + ":" + smsHardwareKey(modemIMEI, deviceID) + ":" + peer + ":" +
 		strconv.Itoa(reference) + ":" + strconv.Itoa(total)
+	if generation = strings.TrimSpace(generation); generation != "" {
+		messageID += ":" + generation
+	}
+	return messageID
 }
 
 // mergeConcatSegment folds one incoming segment into the progressively merged
